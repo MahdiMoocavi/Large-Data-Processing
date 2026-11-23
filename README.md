@@ -1,4 +1,4 @@
-# Replication Study Data-Processing Pipeline
+# Animacy Replication Data Pipeline
 
 A Python preprocessing workflow developed for replication datasets from an English-language animacy experiment. It applies a sequence of study-specific transformations to Excel exports and prepares processed workbooks for subsequent statistical analyses.
 
@@ -27,13 +27,13 @@ pip install pandas numpy openpyxl pyspellchecker
 From the repository directory:
 
 ```bash
-python ReplicationProcessing_2022-12.py --input-dir ./data
+python animacy_replication_pipeline.py --input-dir ./data
 ```
 
 Optionally specify a separate output directory and input pattern:
 
 ```bash
-python ReplicationProcessing_2022-12.py --input-dir ./data --output-dir ./processed --pattern "group*.xlsx"
+python animacy_replication_pipeline.py --input-dir ./data --output-dir ./processed --pattern "group*.xlsx"
 ```
 
 ## Outputs
