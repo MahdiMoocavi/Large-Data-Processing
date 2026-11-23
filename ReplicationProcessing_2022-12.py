@@ -144,7 +144,7 @@ def STAGE5(df):
     def correct_words(text):
         for wrong, correct in corrections.items():
             text = re.sub(
-                rf"\\b{re.escape(wrong)}\\b",
+                rf"\b{re.escape(wrong)}\b",
                 correct,
                 text,
                 flags=re.IGNORECASE,
