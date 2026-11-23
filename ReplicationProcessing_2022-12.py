@@ -7,17 +7,20 @@ The script includes 5 stages of processing. Each stage is defined as a function,
 # Libraries
 import pandas as pd
 import numpy as np
-import string
-import os
-import glob
+import argparse
+import re
+from pathlib import Path
 from spellchecker import SpellChecker
 from openpyxl import Workbook, load_workbook
 
 
 ## STAGE 1: (I) applying exclusion criteria ; (II) converting specific columns to numeric type; & (III) adding Subject ID.
 def STAGE1(df):
-    # Removing the second row (redundant)
-    df.drop(df.index[1], inplace=True)
+    # The original exports contain a redundant second row. Guard the
+    # operation so a short or already-filtered file does not raise IndexError.
+    df = df.copy()
+    if len(df.index) > 1:
+        df = df.drop(df.index[1])
 
     # Converting string columns to numeric type
     df['Progress'] = pd.to_numeric(df['Progress'], errors='coerce')
@@ -114,72 +117,126 @@ def STAGE4(df):
     return df
 
 
-## STAGE 5: (I) spellchecker & spell correction, (II) wordcount & (III) saving output.
+## STAGE 5: spell checking and text normalization.
 def STAGE5(df):
-    # Instantiating the SpellChecker
+    """Normalize open-text responses and retain a transparent correction log."""
     spell = SpellChecker()
-    
-    # Spliting the words in the Q56 column and flattening the list
-    all_words = df['Q56'].str.split().sum()
-    
-    # Finding the misspelled words
+
+    if "Q56" not in df.columns:
+        raise ValueError("Expected open-text response column 'Q56' was not found.")
+
+    original_text = df["Q56"].fillna("").astype(str)
+    token_lists = original_text.str.split()
+    all_words = [word for words in token_lists for word in words]
+
     misspelled = spell.unknown(all_words)
-    
-    # Correcting the misspelled words
-    corrections = {}
-    for word in misspelled:
-        corrections[word] = spell.correction(word)
-    
-    # Replacing the misspelled words in Q56 column with their corrections
+    corrections = {
+        word: (spell.correction(word) or word)
+        for word in misspelled
+    }
+
+    def row_misspellings(text):
+        return " | ".join(
+            word for word in text.split()
+            if word.lower() in {item.lower() for item in misspelled}
+        )
+
     def correct_words(text):
         for wrong, correct in corrections.items():
-            text = text.replace(wrong, correct)
+            text = re.sub(
+                rf"\\b{re.escape(wrong)}\\b",
+                correct,
+                text,
+                flags=re.IGNORECASE,
+            )
         return text
-    
-    df['Q56'] = df['Q56'].apply(correct_words)
-    
-    # Checking for specific word occurrences
-    specified_words = [
-        "owl", "bee", "minister", "baby", "soldier", "python", "wolf", 
-        "engineer", "trout", "turtle", "spider", "duck", "doll", "drum", 
-        "purse", "violin", "slippers", "stove", "rake", "journal", 
-        "whistle", "tent", "hat", "kite"
-    ]
-    
-    # Counting and categorizing word lists
-    word_counts = {}
-    for word in specified_words:
-        word_counts[word] = all_words.count(word)
+
+    corrected_text = original_text.apply(correct_words)
+
+    # Populate the audit columns initialized in STAGE3.
+    df["Words (pre-processed)"] = original_text.str.lower().str.split().str.join(" ")
+    df["Words (incorrectly spelled)"] = original_text.apply(row_misspellings)
+    df["Words (corrected spelling)"] = corrected_text
+    df["Q56"] = corrected_text
 
     return df
 
 
-## GLOBAL function to process all Excel files
-def PROCESS():
-    # Listing all Excel files starting with 'group'
-    excel_files = glob.glob('\\Python\\group*.xlsx')
-    # Dictionary to store processed dataframes
+def PROCESS(input_dir=".", output_dir=None, pattern="group*.xlsx"):
+    """Process all matching Excel files and return their processed DataFrames.
+
+    Parameters
+    ----------
+    input_dir : str or Path
+        Directory containing source Excel exports.
+    output_dir : str or Path or None
+        Directory for processed workbooks. Defaults to input_dir.
+    pattern : str
+        Glob pattern for input files.
+    """
+    input_path = Path(input_dir).expanduser().resolve()
+    output_path = (
+        Path(output_dir).expanduser().resolve()
+        if output_dir is not None
+        else input_path
+    )
+
+    if not input_path.is_dir():
+        raise NotADirectoryError(f"Input directory does not exist: {input_path}")
+
+    excel_files = sorted(input_path.glob(pattern))
+    if not excel_files:
+        raise FileNotFoundError(
+            f"No Excel files matching '{pattern}' were found in {input_path}"
+        )
+
+    output_path.mkdir(parents=True, exist_ok=True)
     processed_dfs = {}
 
     for excel_file in excel_files:
-        # Reading the Excel file
-        df = pd.read_excel(excel_file)  
-        
-        # Processing the dataframe through all the stages
+        df = pd.read_excel(excel_file)
+
+        required = {"Progress", "Q3", "Q56"}
+        missing = required.difference(df.columns)
+        if missing:
+            raise ValueError(
+                f"{excel_file.name} is missing required columns: "
+                + ", ".join(sorted(missing))
+            )
+
         df_stage1 = STAGE1(df.copy())
         df_stage2 = STAGE2(df_stage1.copy())
         df_stage3 = STAGE3(df_stage2.copy())
         df_stage4 = STAGE4(df_stage3.copy())
-        df_stage5 = STAGE5(df_stage4)
+        df_stage5 = STAGE5(df_stage4.copy())
 
-        # Saving the output
-        output_file_name = excel_file.replace(".xlsx", "_processed.xlsx")
-        df_stage5.to_excel(output_file_name, index=False)
-        
-        # Storing the processed dataframe
-        processed_dfs[excel_file] = df_stage5
-    
+        output_file = output_path / f"{excel_file.stem}_processed.xlsx"
+        df_stage5.to_excel(output_file, index=False)
+        processed_dfs[excel_file.name] = df_stage5
+
     return processed_dfs
 
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Preprocess replication-study Excel files."
+    )
+    parser.add_argument(
+        "--input-dir",
+        default=".",
+        help="Directory containing group*.xlsx files (default: current directory).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory for processed files (default: input directory).",
+    )
+    parser.add_argument(
+        "--pattern",
+        default="group*.xlsx",
+        help="Input file pattern (default: group*.xlsx).",
+    )
+    args = parser.parse_args()
+    PROCESS(input_dir=args.input_dir, output_dir=args.output_dir, pattern=args.pattern)
 ### Calling the GLOBAL function
 PROCESS()
